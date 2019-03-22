@@ -3,6 +3,8 @@ package org.hotswap.agent.plugin.vaadin;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.net.URL;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -12,6 +14,7 @@ import org.hotswap.agent.annotation.Init;
 import org.hotswap.agent.annotation.LoadEvent;
 import org.hotswap.agent.annotation.OnClassFileEvent;
 import org.hotswap.agent.annotation.OnClassLoadEvent;
+import org.hotswap.agent.annotation.OnResourceFileEvent;
 import org.hotswap.agent.annotation.Plugin;
 import org.hotswap.agent.command.ReflectionCommand;
 import org.hotswap.agent.command.Scheduler;
@@ -55,6 +58,10 @@ public class VaadinPlugin {
     private Object routeConfiguration;
     private Method setRouteMethod;
     private Method removeRouteMethod;
+    private Method getAvailableRoutes;
+    private Class<?> routeBaseDataClass;
+    private Field navigationTargetField;
+    private Field urlField;
 
     public VaadinPlugin() {
     }
@@ -87,9 +94,15 @@ public class VaadinPlugin {
                 // first RouteConfiguration is the one used for global routes
                 setRouteMethod = routeConfiguration.getClass().getMethod("setAnnotatedRoute", Class.class);
                 removeRouteMethod = routeConfiguration.getClass().getMethod("removeRoute", Class.class);
+                getAvailableRoutes = routeConfiguration.getClass().getMethod("getAvailableRoutes");
+                routeBaseDataClass = resolveClass("com.vaadin.flow.router.RouteBaseData");
+                navigationTargetField = routeBaseDataClass.getDeclaredField("navigationTarget");
+                navigationTargetField.setAccessible(true);
+                urlField = routeBaseDataClass.getDeclaredField("url");
+                urlField.setAccessible(true);
                 this.routeConfiguration = routeConfiguration;
             }
-        } catch (NoSuchMethodException | SecurityException ex) {
+        } catch (NoSuchMethodException | SecurityException | ClassNotFoundException | NoSuchFieldException ex) {
             LOGGER.error(null, ex);
         }
 
@@ -152,7 +165,7 @@ public class VaadinPlugin {
     @OnClassFileEvent(classNameRegexp = ".*", events = {FileEvent.CREATE,
         FileEvent.MODIFY})
     public void addNewRoute(CtClass ctClass) throws Exception {
-        LOGGER.debug("Class file event for " + ctClass.getName());
+        LOGGER.error("Class file event for " + ctClass.getName());
         if (ctClass.hasAnnotation("com.vaadin.flow.router.Route")) {
             LOGGER.info("HotSwapAgent dynamically added new route to " + ctClass.getName());
             if (vaadin13orNewer) {
@@ -163,13 +176,15 @@ public class VaadinPlugin {
         }
     }
 
-    // FIXME throws errors
-    @OnClassFileEvent(classNameRegexp = ".*", events = {FileEvent.DELETE})
-    public void removeRoute(CtClass ctClass) throws Exception {
-        LOGGER.info("Class file event for " + ctClass.getName());
-        if (vaadin13orNewer) {
-            removeFromRouterConfiguration(ctClass);
-            LOGGER.info("HotSwapAgent dynamically removed new route to " + ctClass.getName());
+    // ClassFileEvent throws errors
+    @OnResourceFileEvent(path = "", events = {FileEvent.DELETE})
+    public void removeRoute(URL file) throws Exception {
+        if (vaadin13orNewer && file.getFile().endsWith(".class")) {
+            String almostClassname = file.toString()
+                    .replace("/", ".")
+                    .replace("\\", ".")
+                    .replace(".class", "");
+            removeFromRouterConfiguration(almostClassname);
         }
     }
 
@@ -257,10 +272,17 @@ public class VaadinPlugin {
 
     }
 
-    private void removeFromRouterConfiguration(CtClass ctClass) {
+    private void removeFromRouterConfiguration(String almostClassname) {
         try {
-            removeRouteMethod.invoke(routeConfiguration, resolveClass(ctClass.getName()));
-        } catch (ClassNotFoundException | SecurityException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
+            List availableRoutes = (List) getAvailableRoutes.invoke(routeConfiguration);
+            for (Object route : availableRoutes) {
+                Class<?> target = (Class<?>) navigationTargetField.get(route);
+                if(almostClassname.endsWith(target.getName())) {
+                    removeRouteMethod.invoke(routeConfiguration, target);
+                    LOGGER.info("HotSwapAgent removed route " + target.getName());
+                }
+            }
+        } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
             LOGGER.error(null, ex);
         }
     }
