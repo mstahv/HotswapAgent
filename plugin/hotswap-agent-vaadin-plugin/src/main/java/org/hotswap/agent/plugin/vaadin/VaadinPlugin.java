@@ -30,7 +30,7 @@ import org.hotswap.agent.util.PluginManagerInvoker;
  * @author Matti Tahvonen
  */
 @Plugin(name = "Vaadin", description = "Vaadin Platform support", testedVersions = {
-    "10.0.0.beta9","13.0.1"}, expectedVersions = {"10.0+"})
+    "10.0.0.beta9", "13.0.1"}, expectedVersions = {"10.0+"})
 public class VaadinPlugin {
 
     @Init
@@ -54,6 +54,7 @@ public class VaadinPlugin {
             .getLogger(VaadinPlugin.class);
     private Object routeConfiguration;
     private Method setRouteMethod;
+    private Method removeRouteMethod;
 
     public VaadinPlugin() {
     }
@@ -79,18 +80,19 @@ public class VaadinPlugin {
                 "registerRouteConfiguration", "this", "java.lang.Object");
         ctClass.getDeclaredConstructors()[0].insertAfter(src);
     }
-    
+
     public void registerRouteConfiguration(Object routeConfiguration) {
         try {
-            if(routeConfiguration != null) {
+            if (routeConfiguration != null) {
                 // first RouteConfiguration is the one used for global routes
                 setRouteMethod = routeConfiguration.getClass().getMethod("setAnnotatedRoute", Class.class);
+                removeRouteMethod = routeConfiguration.getClass().getMethod("removeRoute", Class.class);
                 this.routeConfiguration = routeConfiguration;
             }
         } catch (NoSuchMethodException | SecurityException ex) {
             LOGGER.error(null, ex);
         }
-        
+
     }
 
     public void registerServlet(Object vaadinServlet) {
@@ -158,6 +160,16 @@ public class VaadinPlugin {
             } else {
                 ensureInRouter(ctClass);
             }
+        }
+    }
+
+    // FIXME throws errors
+    @OnClassFileEvent(classNameRegexp = ".*", events = {FileEvent.DELETE})
+    public void removeRoute(CtClass ctClass) throws Exception {
+        LOGGER.info("Class file event for " + ctClass.getName());
+        if (vaadin13orNewer) {
+            removeFromRouterConfiguration(ctClass);
+            LOGGER.info("HotSwapAgent dynamically removed new route to " + ctClass.getName());
         }
     }
 
@@ -232,9 +244,9 @@ public class VaadinPlugin {
     private void addToRouterConfiguration(CtClass ctClass) {
         try {
             setRouteMethod.invoke(routeConfiguration, resolveClass(ctClass.getName()));
-        } catch(InvocationTargetException ex) {
+        } catch (InvocationTargetException ex) {
             //com.vaadin.flow.server.InvalidRouteConfigurationException
-            if(ex.getCause().getClass().getName().equals("com.vaadin.flow.server.InvalidRouteConfigurationException")) {
+            if (ex.getCause().getClass().getName().equals("com.vaadin.flow.server.InvalidRouteConfigurationException")) {
                 LOGGER.debug("Already registered");
             } else {
                 LOGGER.error(null, ex);
@@ -243,6 +255,14 @@ public class VaadinPlugin {
             LOGGER.error(null, ex);
         }
 
+    }
+
+    private void removeFromRouterConfiguration(CtClass ctClass) {
+        try {
+            removeRouteMethod.invoke(routeConfiguration, resolveClass(ctClass.getName()));
+        } catch (ClassNotFoundException | SecurityException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
+            LOGGER.error(null, ex);
+        }
     }
 
 }
